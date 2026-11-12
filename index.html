@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Doc Parlant</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1f4d3a">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Doc Parlant">
+<style>
+:root{--bg:#f4f1e8;--ink:#1d2a24;--muted:#5d6b63;--accent:#1f4d3a;--card:#fffdf7;--line:#d6d0bd}
+@media (prefers-color-scheme:dark){:root{--bg:#121b16;--ink:#ece8da;--muted:#9fb0a5;--accent:#5fae8a;--card:#1a2620;--line:#2c3b33}}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Georgia,'Times New Roman',serif}
+body{padding:max(18px,env(safe-area-inset-top)) 18px max(18px,env(safe-area-inset-bottom));max-width:520px;margin:auto}
+h1{font-size:1.5rem;margin:.2em 0 .8em}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:12px}
+label,summary{font:14px system-ui,sans-serif;color:var(--muted)}
+input[type=text],input[type=url],input[type=password]{width:100%;padding:11px;margin-top:6px;border:1px solid var(--line);border-radius:8px;background:transparent;color:var(--ink);font:16px system-ui}
+button,.btn{display:block;width:100%;text-align:center;font:600 1rem system-ui,sans-serif;padding:14px;border-radius:8px;border:0;background:var(--accent);color:var(--bg);cursor:pointer}
+@media (prefers-color-scheme:dark){button,.btn{color:#0d1511}}
+.btn.alt{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:disabled{opacity:.55}
+:focus-visible{outline:3px solid var(--ink);outline-offset:2px}
+#apercu{display:none;max-width:100%;max-height:260px;margin:12px auto 0;border-radius:6px;border:1px solid var(--line)}
+#rep{white-space:pre-wrap;display:none}
+#statut{font:14px system-ui,sans-serif;color:var(--muted);min-height:1.4em;margin:8px 0}
+audio{width:100%;margin-top:10px;display:none}
+details{margin-top:6px}
+</style>
+</head>
+<body>
+<h1>Doc Parlant</h1>
+
+<div class="card">
+  <label class="btn alt" for="photo" role="button" tabindex="0">📷 Photographier le document</label>
+  <input type="file" id="photo" accept="image/*" capture="environment" hidden>
+  <img id="apercu" alt="Aperçu du document">
+</div>
+
+<div class="card">
+  <label for="question">Votre question</label>
+  <input type="text" id="question" placeholder="Ex. : Quel est le total de la colonne Mars ?" enterkeyhint="send">
+</div>
+
+<button id="envoyer">Demander</button>
+<div id="statut" role="status" aria-live="polite"></div>
+
+<div class="card" id="rep"></div>
+<audio id="audio" controls playsinline></audio>
+
+<details class="card" id="reglages">
+  <summary>Réglages (à remplir une fois)</summary>
+  <label for="url" style="display:block;margin-top:10px">URL du Worker</label>
+  <input type="url" id="url" placeholder="https://xxx.workers.dev" autocapitalize="off">
+  <label for="token" style="display:block;margin-top:10px">Jeton secret</label>
+  <input type="password" id="token" autocomplete="off">
+</details>
+
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get: k => { try { return localStorage.getItem(k) || ''; } catch(e){ return ''; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch(e){} }
+};
+let imageB64 = '';
+const audio = $('audio');
+
+$('url').value = store.get('url'); $('token').value = store.get('token');
+$('url').onchange = e => store.set('url', e.target.value.trim());
+$('token').onchange = e => store.set('token', e.target.value.trim());
+if (!store.get('url')) $('reglages').open = true;
+
+/* Silence court pour débloquer la lecture audio dans le geste utilisateur */
+function silentWav(){
+  const n = 800, b = new DataView(new ArrayBuffer(44 + n));
+  const s = (o, t) => [...t].forEach((c, i) => b.setUint8(o + i, c.charCodeAt(0)));
+  s(0,'RIFF'); b.setUint32(4,36+n,true); s(8,'WAVE'); s(12,'fmt ');
+  b.setUint32(16,16,true); b.setUint16(20,1,true); b.setUint16(22,1,true);
+  b.setUint32(24,8000,true); b.setUint32(28,8000,true); b.setUint16(32,1,true); b.setUint16(34,8,true);
+  s(36,'data'); b.setUint32(40,n,true);
+  for (let i = 0; i < n; i++) b.setUint8(44 + i, 128);
+  return URL.createObjectURL(new Blob([b], {type:'audio/wav'}));
+}
+
+/* Photo -> JPEG réduit (1600 px max), en base64 */
+async function reduire(file){
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas');
+  c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.8);
+}
+
+$('photo').onchange = async e => {
+  const f = e.target.files[0]; if (!f) return;
+  $('statut').textContent = 'Préparation de l’image…';
+  try {
+    const d = await reduire(f);
+    imageB64 = d.split(',')[1];
+    $('apercu').src = d; $('apercu').style.display = 'block';
+    $('statut').textContent = 'Image prête (' + Math.round(imageB64.length / 1024) + ' Ko).';
+  } catch(err){ $('statut').textContent = 'Image illisible : ' + err.message; }
+};
+
+$('envoyer').onclick = async () => {
+  const q = $('question').value.trim(), url = store.get('url'), tok = store.get('token');
+  if (!imageB64) return void ($('statut').textContent = 'Prenez d’abord une photo.');
+  if (!q) return void ($('statut').textContent = 'Écrivez une question.');
+  if (!url || !tok) { $('reglages').open = true; return void ($('statut').textContent = 'Renseignez les réglages.'); }
+
+  audio.src = silentWav(); audio.play().catch(()=>{});   // geste utilisateur
+  $('envoyer').disabled = true; $('statut').textContent = 'Analyse en cours…';
+  $('rep').style.display = 'none'; audio.style.display = 'none';
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Token': tok },
+      body: JSON.stringify({ question: q, image: imageB64, mime: 'image/jpeg' })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.erreur + (d.detail ? ' — ' + d.detail : ''));
+    $('rep').textContent = d.texte; $('rep').style.display = 'block';
+    if (d.audio){
+      audio.src = 'data:audio/mp3;base64,' + d.audio; audio.style.display = 'block';
+      try { await audio.play(); $('statut').textContent = ''; }
+      catch(e){ $('statut').textContent = 'Touchez ▶ pour écouter la réponse.'; }
+    } else $('statut').textContent = 'Audio indisponible : ' + (d.erreur_audio || '');
+  } catch(err){ $('statut').textContent = 'Erreur : ' + err.message; }
+  $('envoyer').disabled = false;
+};
+$('question').addEventListener('keydown', e => { if (e.key === 'Enter') $('envoyer').click(); });
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js');
+</script>
+</body>
+</html>
